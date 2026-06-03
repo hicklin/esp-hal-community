@@ -365,35 +365,6 @@ where
             color: PhantomData,
         }
     }
-
-    fn prepare_rmt_buffer<I: Into<Color>>(
-        &mut self,
-        iterator: impl IntoIterator<Item = I>,
-    ) -> Result<(), LedAdapterError> {
-        // We always start from the beginning of the buffer
-        let mut seq_iter = self.rmt_buffer.iter_mut();
-
-        // Add all converted iterator items to the buffer.
-        // This will result in an `BufferSizeExceeded` error in case
-        // the iterator provides more elements than the buffer can take.
-        for item in iterator {
-            Self::convert_to_pulses(item.into().as_slice(), &mut seq_iter, self.pulses)?;
-        }
-        Ok(())
-    }
-
-    /// Async sends one pixel at a time so needs a delimiter after each pixel
-    fn convert_to_pulses(
-        value: &[u8],
-        mut_iter: &mut IterMut<PulseCode>,
-        pulses: (PulseCode, PulseCode),
-    ) -> Result<(), LedAdapterError> {
-        for v in value {
-            convert_rgb_channel_to_pulses(*v, mut_iter, pulses)?;
-        }
-        *mut_iter.next().ok_or(LedAdapterError::BufferSizeExceeded)? = PulseCode::end_marker();
-        Ok(())
-    }
 }
 
 #[allow(deprecated)]
@@ -413,13 +384,20 @@ where
         T: IntoIterator<Item = I>,
         I: Into<Self::Color>,
     {
-        self.prepare_rmt_buffer(iterator)?;
-        for chunk in self.rmt_buffer.chunks(RMT_RAM_ONE_LED + 1) {
-            self.channel
-                .transmit(chunk)
-                .await
-                .map_err(LedAdapterError::TransmissionError)?;
+        // We always start from the beginning of the buffer
+        let mut seq_iter = self.rmt_buffer.iter_mut();
+
+        // Add all converted iterator items to the buffer.
+        // This will result in an `BufferSizeExceeded` error in case
+        // the iterator provides more elements than the buffer can take.
+        for item in iterator {
+            convert_to_pulses(item.into().as_slice(), &mut seq_iter, self.pulses)?;
         }
-        Ok(())
+
+        // Finally, add an end element.
+        *seq_iter.next().ok_or(LedAdapterError::BufferSizeExceeded)? = PulseCode::end_marker();
+
+        // Perform the actual RMT operation.
+        self.channel.transmit(self.rmt_buffer).await.map_err(LedAdapterError::TransmissionError)
     }
 }
